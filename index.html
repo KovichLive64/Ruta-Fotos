@@ -18,6 +18,8 @@ h1{font-size:18px;margin:0 0 8px}
 h2{font-size:15px;margin:16px 0 6px}
 textarea,input{width:100%;padding:8px;border:1px solid #bbb;border-radius:6px;font:inherit}
 textarea{height:70px;resize:vertical}
+select{width:100%;padding:8px;border:1px solid #bbb;border-radius:6px;font:inherit;background:#fff}
+label{font-size:12px;color:#555;display:block;margin-top:8px}
 button{padding:7px 10px;border:0;border-radius:6px;background:#2563eb;color:#fff;font:inherit;cursor:pointer}
 button.sec{background:#e5e7eb;color:#222}
 button.ok{background:#16a34a}
@@ -38,7 +40,10 @@ button.del{background:#fff;color:#b91c1c;border:1px solid #fca5a5}
   <h1>📍 Ruta de fotos</h1>
   <label style="font-size:12px;color:#555">Ciudad (se añade a cada dirección, se escribe una sola vez)</label>
   <input id="city" placeholder="Ej. Guadalajara, Jalisco">
-  <label style="font-size:12px;color:#555;display:block;margin-top:8px">Direcciones (una por línea)</label>
+  <label>Lista (ej. Espectaculares, Pantallas; si no existe, se crea)</label>
+  <input id="list" list="lists" placeholder="Ej. Espectaculares" autocomplete="off">
+  <datalist id="lists"></datalist>
+  <label>Direcciones (una por línea)</label>
   <textarea id="addr" placeholder="Ej. Moneda 465"></textarea>
   <div class="row">
    <button onclick="add()">Agregar</button>
@@ -46,6 +51,8 @@ button.del{background:#fff;color:#b91c1c;border:1px solid #fca5a5}
    <button class="sec" onclick="gmaps()">Abrir en Google Maps</button>
   </div>
   <div id="msg"></div>
+  <label>Ver lista:</label>
+  <select id="flt" onchange="S.flt=this.value;save();clearRoute();render(true)"></select>
   <h2>Pendientes (<span id="cp">0</span>)</h2>
   <div id="pend"></div>
   <h2>Visitados (<span id="cd">0</span>)</h2>
@@ -59,6 +66,10 @@ const $=id=>document.getElementById(id);
 let S;
 try{S=JSON.parse(localStorage.getItem('rutaFotos'))}catch(e){}
 if(!S||!S.items)S={city:'',items:[]};
+S.items.forEach(x=>{if(!x.list)x.list='General'});
+if(!S.flt)S.flt='Todas';
+const lab=x=>S.flt==='Todas'?x.addr+'  ['+x.list+']':x.addr;
+const pend=()=>S.items.filter(x=>!x.done&&(S.flt==='Todas'||x.list===S.flt));
 const save=()=>{try{localStorage.setItem('rutaFotos',JSON.stringify(S))}catch(e){}};
 const msg=t=>$('msg').textContent=t;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -66,13 +77,15 @@ const map=L.map('map').setView([19.43,-99.13],11);
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Tiles © Esri'}).addTo(map);
 const layer=L.layerGroup().addTo(map);
 let line=null,me=null;
-$('city').value=S.city;
+$('city').value=S.city;$('list').value=S.lastList||'';
 $('city').onchange=()=>{S.city=$('city').value.trim();save()};
 
 async function add(){
   const lines=$('addr').value.split('\n').map(s=>s.trim()).filter(Boolean);
   if(!lines.length)return;
   S.city=$('city').value.trim();
+  const lst=$('list').value.trim()||'General';
+  S.lastList=lst;
   for(let i=0;i<lines.length;i++){
     msg('Buscando '+(i+1)+' de '+lines.length+'…');
     const q=lines[i]+(S.city?', '+S.city:'');
@@ -90,8 +103,8 @@ async function add(){
       }catch(e){msg('Error de conexión');return}
     }
     if(!pt){msg('No encontré: '+lines[i]+' (prueba con más detalle)');continue}
-    S.items.push({id:Date.now()+i,addr:lines[i],lat:pt.lat,lon:pt.lon,done:false});
-    save();render(true);
+    S.items.push({id:Date.now()+i,addr:lines[i],list:lst,lat:pt.lat,lon:pt.lon,done:false});
+    S.flt=lst;save();render(true);
     if(i<lines.length-1)await sleep(1100);
   }
   $('addr').value='';
@@ -100,21 +113,27 @@ async function add(){
 
 function render(fit){
   layer.clearLayers();
-  const p=S.items.filter(x=>!x.done),d=S.items.filter(x=>x.done);
+  const names=[...new Set(S.items.map(x=>x.list))];
+  if(S.flt!=='Todas'&&!names.includes(S.flt))S.flt='Todas';
+  $('flt').innerHTML='';
+  ['Todas'].concat(names).forEach(n=>{const o=document.createElement('option');o.value=n;const c=S.items.filter(x=>!x.done&&(n==='Todas'||x.list===n)).length;o.textContent=n+' ('+c+')';if(n===S.flt)o.selected=true;$('flt').append(o)});
+  $('lists').innerHTML='';names.forEach(n=>{const o=document.createElement('option');o.value=n;$('lists').append(o)});
+  const vis=S.items.filter(x=>S.flt==='Todas'||x.list===S.flt);
+  const p=vis.filter(x=>!x.done),d=vis.filter(x=>x.done);
   $('cp').textContent=p.length;$('cd').textContent=d.length;
   $('pend').innerHTML='';$('done').innerHTML='';
   p.forEach((x,i)=>{
-    const m=L.marker([x.lat,x.lon],{icon:L.divIcon({className:'',html:'<div class="pin">'+(i+1)+'</div>',iconSize:[24,24]})}).addTo(layer).bindPopup(x.addr);
+    const m=L.marker([x.lat,x.lon],{icon:L.divIcon({className:'',html:'<div class="pin">'+(i+1)+'</div>',iconSize:[24,24]})}).addTo(layer).bindPopup(lab(x));
     const el=document.createElement('div');el.className='item';
     el.innerHTML='<span class="n">'+(i+1)+'</span><span class="t"></span>';
-    el.querySelector('.t').textContent=x.addr;
+    el.querySelector('.t').textContent=lab(x);
     el.querySelector('.t').onclick=()=>{map.setView([x.lat,x.lon],16);m.openPopup()};
     el.append(btn('✔ Visitado','ok',()=>{x.done=true;save();clearRoute();render()}),btn('✕','del',()=>del(x.id)));
     $('pend').append(el);
   });
   d.forEach(x=>{
     const el=document.createElement('div');el.className='item done';
-    el.innerHTML='<span class="t"></span>';el.querySelector('.t').textContent=x.addr;
+    el.innerHTML='<span class="t"></span>';el.querySelector('.t').textContent=lab(x);
     el.append(btn('↩','sec',()=>{x.done=false;save();render()}),btn('✕','del',()=>del(x.id)));
     $('done').append(el);
   });
@@ -131,7 +150,7 @@ function pos(){return new Promise(res=>{
 const dist=(a,b)=>Math.hypot(a.lat-b.lat,(a.lon-b.lon)*Math.cos(a.lat*Math.PI/180));
 
 async function order(){
-  const p=S.items.filter(x=>!x.done);
+  const p=pend();
   if(p.length<1)return null;
   const start=await pos();
   if(start){if(me)map.removeLayer(me);me=L.circleMarker([start.lat,start.lon],{radius:8,color:'#dc2626'}).addTo(map).bindPopup('Tú')}
@@ -141,7 +160,7 @@ async function order(){
     let k=0;rest.forEach((x,i)=>{if(dist(cur,x)<dist(cur,rest[k]))k=i});
     cur=rest.splice(k,1)[0];out.push(cur);
   }
-  S.items=S.items.filter(x=>x.done).concat(out);save();render();
+  S.items=S.items.filter(x=>!out.includes(x)).concat(out);save();render();
   return {start,list:out};
 }
 

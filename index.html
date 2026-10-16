@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ruta de fotos</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="theme-color" content="#2563eb">
+<link rel="apple-touch-icon" href="./icon-192.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,Arial,sans-serif;background:#f4f5f7;color:#222}
+.wrap{display:grid;grid-template-columns:380px 1fr;height:100vh}
+.side{padding:12px;overflow:auto;background:#fff;border-right:1px solid #ddd}
+#map{height:100%;min-height:300px}
+h1{font-size:18px;margin:0 0 8px}
+h2{font-size:15px;margin:16px 0 6px}
+textarea,input{width:100%;padding:8px;border:1px solid #bbb;border-radius:6px;font:inherit}
+textarea{height:70px;resize:vertical}
+button{padding:7px 10px;border:0;border-radius:6px;background:#2563eb;color:#fff;font:inherit;cursor:pointer}
+button.sec{background:#e5e7eb;color:#222}
+button.ok{background:#16a34a}
+button.del{background:#fff;color:#b91c1c;border:1px solid #fca5a5}
+.row{display:flex;gap:6px;margin:6px 0;flex-wrap:wrap}
+.item{display:flex;gap:6px;align-items:center;padding:8px;border:1px solid #e5e7eb;border-radius:8px;margin:5px 0}
+.item .t{flex:1;font-size:14px;cursor:pointer}
+.n{background:#2563eb;color:#fff;border-radius:50%;min-width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;font-size:12px}
+.done .t{color:#666;text-decoration:line-through}
+#msg{font-size:13px;color:#b45309;min-height:18px}
+.pin{background:#2563eb;color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;border:2px solid #fff;box-shadow:0 1px 4px #0006}
+@media(max-width:800px){.wrap{grid-template-columns:1fr;grid-template-rows:45vh auto;height:auto}#map{order:-1;height:45vh}.side{border-right:0}}
+</style>
+</head>
+<body>
+<div class="wrap">
+ <div class="side">
+  <h1>📍 Ruta de fotos</h1>
+  <label style="font-size:12px;color:#555">Ciudad (se añade a cada dirección, se escribe una sola vez)</label>
+  <input id="city" placeholder="Ej. Guadalajara, Jalisco">
+  <label style="font-size:12px;color:#555;display:block;margin-top:8px">Direcciones (una por línea)</label>
+  <textarea id="addr" placeholder="Ej. Moneda 465"></textarea>
+  <div class="row">
+   <button onclick="add()">Agregar</button>
+   <button class="sec" onclick="route()">Trazar ruta</button>
+   <button class="sec" onclick="gmaps()">Abrir en Google Maps</button>
+  </div>
+  <div id="msg"></div>
+  <h2>Pendientes (<span id="cp">0</span>)</h2>
+  <div id="pend"></div>
+  <h2>Visitados (<span id="cd">0</span>)</h2>
+  <div id="done"></div>
+ </div>
+ <div id="map"></div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let S;
+try{S=JSON.parse(localStorage.getItem('rutaFotos'))}catch(e){}
+if(!S||!S.items)S={city:'',items:[]};
+const save=()=>{try{localStorage.setItem('rutaFotos',JSON.stringify(S))}catch(e){}};
+const msg=t=>$('msg').textContent=t;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const map=L.map('map').setView([19.43,-99.13],11);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Tiles © Esri'}).addTo(map);
+const layer=L.layerGroup().addTo(map);
+let line=null,me=null;
+$('city').value=S.city;
+$('city').onchange=()=>{S.city=$('city').value.trim();save()};
+
+async function add(){
+  const lines=$('addr').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!lines.length)return;
+  S.city=$('city').value.trim();
+  for(let i=0;i<lines.length;i++){
+    msg('Buscando '+(i+1)+' de '+lines.length+'…');
+    const q=lines[i]+(S.city?', '+S.city:'');
+    let pt=null;
+    try{
+      const r=await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(q));
+      const j=await r.json();
+      if(j.length)pt={lat:+j[0].lat,lon:+j[0].lon};
+    }catch(e){}
+    if(!pt){
+      try{
+        const r=await fetch('https://photon.komoot.io/api/?limit=1&q='+encodeURIComponent(q));
+        const j=await r.json();
+        if(j.features&&j.features.length){const c=j.features[0].geometry.coordinates;pt={lat:c[1],lon:c[0]}}
+      }catch(e){msg('Error de conexión');return}
+    }
+    if(!pt){msg('No encontré: '+lines[i]+' (prueba con más detalle)');continue}
+    S.items.push({id:Date.now()+i,addr:lines[i],lat:pt.lat,lon:pt.lon,done:false});
+    save();render(true);
+    if(i<lines.length-1)await sleep(1100);
+  }
+  $('addr').value='';
+  if(!$('msg').textContent.startsWith('No'))msg('');
+}
+
+function render(fit){
+  layer.clearLayers();
+  const p=S.items.filter(x=>!x.done),d=S.items.filter(x=>x.done);
+  $('cp').textContent=p.length;$('cd').textContent=d.length;
+  $('pend').innerHTML='';$('done').innerHTML='';
+  p.forEach((x,i)=>{
+    const m=L.marker([x.lat,x.lon],{icon:L.divIcon({className:'',html:'<div class="pin">'+(i+1)+'</div>',iconSize:[24,24]})}).addTo(layer).bindPopup(x.addr);
+    const el=document.createElement('div');el.className='item';
+    el.innerHTML='<span class="n">'+(i+1)+'</span><span class="t"></span>';
+    el.querySelector('.t').textContent=x.addr;
+    el.querySelector('.t').onclick=()=>{map.setView([x.lat,x.lon],16);m.openPopup()};
+    el.append(btn('✔ Visitado','ok',()=>{x.done=true;save();clearRoute();render()}),btn('✕','del',()=>del(x.id)));
+    $('pend').append(el);
+  });
+  d.forEach(x=>{
+    const el=document.createElement('div');el.className='item done';
+    el.innerHTML='<span class="t"></span>';el.querySelector('.t').textContent=x.addr;
+    el.append(btn('↩','sec',()=>{x.done=false;save();render()}),btn('✕','del',()=>del(x.id)));
+    $('done').append(el);
+  });
+  if(fit&&p.length)map.fitBounds(p.map(x=>[x.lat,x.lon]),{padding:[40,40],maxZoom:16});
+}
+function btn(t,c,f){const b=document.createElement('button');b.textContent=t;b.className=c;b.onclick=f;return b}
+function del(id){S.items=S.items.filter(x=>x.id!==id);save();clearRoute();render()}
+function clearRoute(){if(line){map.removeLayer(line);line=null}}
+
+function pos(){return new Promise(res=>{
+  if(!navigator.geolocation)return res(null);
+  navigator.geolocation.getCurrentPosition(p=>res({lat:p.coords.latitude,lon:p.coords.longitude}),()=>res(null),{timeout:6000});
+})}
+const dist=(a,b)=>Math.hypot(a.lat-b.lat,(a.lon-b.lon)*Math.cos(a.lat*Math.PI/180));
+
+async function order(){
+  const p=S.items.filter(x=>!x.done);
+  if(p.length<1)return null;
+  const start=await pos();
+  if(start){if(me)map.removeLayer(me);me=L.circleMarker([start.lat,start.lon],{radius:8,color:'#dc2626'}).addTo(map).bindPopup('Tú')}
+  let cur=start||p[0],rest=p.slice(),out=[];
+  if(!start){out.push(rest.shift())}
+  while(rest.length){
+    let k=0;rest.forEach((x,i)=>{if(dist(cur,x)<dist(cur,rest[k]))k=i});
+    cur=rest.splice(k,1)[0];out.push(cur);
+  }
+  S.items=S.items.filter(x=>x.done).concat(out);save();render();
+  return {start,list:out};
+}
+
+async function route(){
+  msg('Calculando ruta…');
+  const o=await order();
+  if(!o){msg('No hay pendientes');return}
+  const pts=(o.start?[o.start]:[]).concat(o.list);
+  if(pts.length<2){msg('');return}
+  try{
+    const u='https://router.project-osrm.org/route/v1/driving/'+pts.map(x=>x.lon+','+x.lat).join(';')+'?overview=full&geometries=geojson';
+    const j=await (await fetch(u)).json();
+    clearRoute();
+    line=L.geoJSON(j.routes[0].geometry,{style:{color:'#2563eb',weight:5,opacity:.7}}).addTo(map);
+    map.fitBounds(line.getBounds(),{padding:[40,40]});
+    msg('Ruta: '+(j.routes[0].distance/1000).toFixed(1)+' km, ~'+Math.round(j.routes[0].duration/60)+' min (en auto)');
+  }catch(e){msg('No pude trazar la ruta, pero la lista quedó ordenada por cercanía')}
+}
+
+async function gmaps(){
+  const o=await order();
+  if(!o){msg('No hay pendientes');return}
+  const l=o.list.slice(0,10);
+  const c=x=>x.lat+','+x.lon;
+  const dest=l[l.length-1],way=l.slice(0,-1).map(c).join('|');
+  let u='https://www.google.com/maps/dir/?api=1&destination='+c(dest)+(way?'&waypoints='+encodeURIComponent(way):'');
+  if(o.start)u+='&origin='+c(o.start);
+  if(o.list.length>10)msg('Google Maps admite ~10 paradas; se abrieron las primeras 10');
+  window.open(u,'_blank');
+}
+render(true);
+if("serviceWorker" in navigator)navigator.serviceWorker.register("./sw.js").catch(()=>{});
+</script>
+</body>
+</html>
